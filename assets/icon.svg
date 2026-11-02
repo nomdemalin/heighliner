@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Heighliner mark. Upward wedge of four tier-colored slats:
+      apex   = hot    (small, bright)
+      base   = frozen (wide, muted)
+    Same construction as src/ui/theme.rs::paint_logo so the in-app brand
+    and the .app icon stay visually identical.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#131B2A"/>
+      <stop offset="100%" stop-color="#0B101A"/>
+    </linearGradient>
+    <filter id="innerShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+      <feOffset dy="2" result="offsetblur"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded dark background tile. -->
+  <rect width="1024" height="1024" rx="180" ry="180" fill="url(#bg)"/>
+
+  <!-- Mark area is 600x600 centered at (512, 512). -->
+  <g filter="url(#innerShadow)">
+    <!-- Hot (apex): top_frac=0.00, bot_frac=0.22 -->
+    <polygon fill="#FF7A59" points="482,227 542,227 578,329 446,329"/>
+    <!-- Warm:        top_frac=0.22, bot_frac=0.48 -->
+    <polygon fill="#FFB24D" points="446,359 578,359 656,485 368,485"/>
+    <!-- Cold:        top_frac=0.48, bot_frac=0.74 -->
+    <polygon fill="#6BB7FF" points="368,515 656,515 734,641 290,641"/>
+    <!-- Frozen (base): top_frac=0.74, bot_frac=1.00 -->
+    <polygon fill="#A7C0DC" points="290,671 734,671 812,797 212,797"/>
+  </g>
+</svg>

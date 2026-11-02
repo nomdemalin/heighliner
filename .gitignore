@@ -1,0 +1,12 @@
+/target
+/dist
+/assets/*.iconset
+/assets/Heighliner.icns
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+/.direnv
