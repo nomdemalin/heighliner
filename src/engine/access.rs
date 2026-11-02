@@ -2,11 +2,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Command;
 
-/// Best-effort last-access timestamp. Combines our own signals with
-/// `kMDItemLastUsedDate` (when LaunchServices has seen the file opened) and
-/// falls back to `st_atime`. See [[project-heighliner-architecture]].
+/// Best-effort last-access timestamp. Uses `st_atime` only — we deliberately
+/// do NOT fork `mdls` per file here (F6): that was a fork+exec per ingested
+/// file from the engine thread with no timeout, and a single hung mdls child
+/// would wedge the engine. `spotlight_last_used` stays available for
+/// targeted lookups (e.g. before promoting a file to the frozen tier).
 pub fn best_last_access(path: &Path) -> Option<i64> {
-    spotlight_last_used(path).or_else(|| atime_unix(path))
+    atime_unix(path)
 }
 
 /// Best-effort read of the file's last-access unix timestamp. On macOS this is
@@ -36,6 +38,11 @@ pub fn btime_unix(path: &Path) -> Option<i64> {
 /// Shell out to `mdls -raw -name kMDItemLastUsedDate <path>`. Returns the
 /// parsed unix timestamp when LaunchServices has seen the file opened, else
 /// `None` (which is common for files only touched by scripts/CLIs).
+///
+/// Intentionally NOT called from the ingest hot path (F6). Reserved for the
+/// future "about to promote to frozen" check where paying one fork+exec per
+/// candidate file is acceptable.
+#[allow(dead_code)]
 #[cfg(target_os = "macos")]
 pub fn spotlight_last_used(path: &Path) -> Option<i64> {
     let output = Command::new("mdls")
@@ -60,6 +67,7 @@ pub fn spotlight_last_used(path: &Path) -> Option<i64> {
     Some(dt.timestamp())
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "macos"))]
 pub fn spotlight_last_used(_path: &Path) -> Option<i64> {
     None

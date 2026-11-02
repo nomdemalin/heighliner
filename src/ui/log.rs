@@ -83,9 +83,16 @@ fn row_card(ui: &mut egui::Ui, row: &crate::engine::index::ActionRow) {
     };
     let kind_color = match row.kind.as_str() {
         "move" => PALETTE.accent,
-        "move_dry_run" | "archive_dry_run" | "archive_tree_dry_run" | "purge_dry_run" => PALETTE.warning,
-        "archive" | "archive_tree" => PALETTE.tier_cold,
-        "purge" => PALETTE.danger,
+        "move_dry_run"
+        | "archive_dry_run"
+        | "archive_zip_dry_run"
+        | "archive_tree_dry_run"
+        | "archive_tree_zip_dry_run"
+        | "purge_dry_run"
+        | "delete_after_dry_run" => PALETTE.warning,
+        "archive" | "archive_zip" | "archive_tree" | "archive_tree_zip" => PALETTE.tier_cold,
+        "purge" | "delete_after" => PALETTE.danger,
+        "skip_in_place" => PALETTE.text_faint,
         _ => PALETTE.text_dim,
     };
 

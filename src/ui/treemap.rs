@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, Rect, Rounding, Sense, Stroke, Vec2};
 
-use crate::engine::index::ChildBreakdown;
 use crate::engine::EngineHandle;
 use crate::ui::theme::{self, PALETTE};
 
@@ -48,7 +47,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TreemapState, engine: &EngineHandle) 
     });
     ui.add_space(6.0);
 
-    let root = &watches[state.selected_root.min(watches.len() - 1)];
+    let Some(root) = watches
+        .get(state.selected_root)
+        .or_else(|| watches.first())
+    else {
+        return;
+    };
     let items = match engine.index.bytes_per_child(root) {
         Ok(v) if !v.is_empty() => v,
         Ok(_) => {
@@ -339,5 +343,3 @@ fn place_row(scaled: &[f32], row: &[usize], area: &mut Rect, out: &mut [Rect]) {
     }
 }
 
-// Keep ChildBreakdown re-exported so other modules don't need the engine path.
-pub type _Reexport = ChildBreakdown;

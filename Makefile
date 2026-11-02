@@ -55,8 +55,15 @@ build: ## Release build of the binary (no side effects outside target/)
 	$(CARGO) build --release
 
 ## Assets
+ICON_PNG := assets/icon.png
+
 .PHONY: icon
-icon: $(ICNS) ## Render assets/icon.svg → .icns (needs: brew install librsvg)
+icon: $(ICNS) $(ICON_PNG) ## Render assets/icon.svg → .icns + 512px PNG (needs: brew install librsvg)
+
+$(ICON_PNG): $(ICON_SVG)
+	@command -v rsvg-convert >/dev/null || { echo "rsvg-convert not found. Install with: brew install librsvg"; exit 1; }
+	rsvg-convert -w 512 -h 512 $(ICON_SVG) -o $(ICON_PNG)
+	@echo "Built $(ICON_PNG)"
 
 $(ICNS): $(ICON_SVG)
 	@command -v rsvg-convert >/dev/null || { echo "rsvg-convert not found. Install with: brew install librsvg"; exit 1; }
@@ -173,4 +180,3 @@ distclean: clean ## Also remove the on-disk index and config (DESTRUCTIVE)
 	@echo "This will remove your Heighliner config and index. Ctrl-C to abort; waiting 3s…"
 	@sleep 3
 	rm -rf "$(HOME)/Library/Application Support/Heighliner"
-	rm -rf "$(HOME)/.config/heighliner"

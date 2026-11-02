@@ -44,3 +44,8 @@ CREATE TABLE IF NOT EXISTS tier_moves (
 );
 
 CREATE INDEX IF NOT EXISTS tier_moves_path_idx ON tier_moves(path);
+
+CREATE TABLE IF NOT EXISTS sweep_runs (
+    kind         TEXT PRIMARY KEY,
+    last_run_at  INTEGER NOT NULL
+);

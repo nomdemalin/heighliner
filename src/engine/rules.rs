@@ -6,19 +6,23 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use super::config::{Action, Match, Rule, Tier};
 
-pub struct CompiledRule<'a> {
-    pub src: &'a Rule,
+/// Owns the source rule so compiled rules can live independent of the Config
+/// struct — needed to cache them on the engine (F5) rather than rebuild per
+/// FS event.
+#[derive(Clone, Debug)]
+pub struct CompiledRule {
+    pub rule: Rule,
     pub name_glob: Option<GlobSet>,
     pub path_glob: Option<GlobSet>,
 }
 
-pub fn compile(rules: &[Rule]) -> Result<Vec<CompiledRule<'_>>> {
+pub fn compile(rules: &[Rule]) -> Result<Vec<CompiledRule>> {
     rules
         .iter()
         .filter(|r| r.enabled.unwrap_or(true))
         .map(|r| {
             Ok(CompiledRule {
-                src: r,
+                rule: r.clone(),
                 name_glob: build_set(&r.r#match.name_glob)?,
                 path_glob: build_set(&r.r#match.path_glob)?,
             })
@@ -54,12 +58,12 @@ pub enum Resolved {
 }
 
 pub fn first_match<'a>(
-    rules: &'a [CompiledRule<'a>],
-    cand: &Candidate<'a>,
+    rules: &'a [CompiledRule],
+    cand: &Candidate<'_>,
 ) -> Option<(&'a Rule, Resolved)> {
     for r in rules {
         if matches(cand, r) {
-            let action = match &r.src.action {
+            let action = match &r.rule.action {
                 Action::Move { to } => Resolved::MoveTo(to.clone()),
                 Action::Retier { to } => Resolved::Retier(*to),
                 Action::Archive { to, delete_source } => Resolved::Archive {
@@ -68,14 +72,14 @@ pub fn first_match<'a>(
                 },
                 Action::DeleteAfter { after } => Resolved::DeleteAfter(*after),
             };
-            return Some((r.src, action));
+            return Some((&r.rule, action));
         }
     }
     None
 }
 
-fn matches(c: &Candidate<'_>, r: &CompiledRule<'_>) -> bool {
-    let m: &Match = &r.src.r#match;
+fn matches(c: &Candidate<'_>, r: &CompiledRule) -> bool {
+    let m: &Match = &r.rule.r#match;
 
     if !m.extension.is_empty() {
         let ext = c.path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -123,13 +127,17 @@ fn matches(c: &Candidate<'_>, r: &CompiledRule<'_>) -> bool {
     true
 }
 
-/// Compute destination path for a Move action: `dest_root/<tier>/<filename>`.
+/// Destination for a Move action: `dest_root/<tier>/<src_parent>/<filename>`.
+/// Preserving one level of source structure keeps same-named files from
+/// different source dirs out of each other's way (F14).
 pub fn move_destination(dest_root: &Path, tier: Tier, src: &Path) -> PathBuf {
     let mut p = dest_root.to_path_buf();
     p.push(tier.dir_name());
+    if let Some(parent) = src.parent().and_then(|p| p.file_name()) {
+        p.push(parent);
+    }
     if let Some(name) = src.file_name() {
         p.push(name);
     }
     p
 }
-

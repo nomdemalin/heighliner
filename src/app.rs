@@ -206,11 +206,7 @@ impl HeighlinerApp {
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new(format!(
                         "{} files · {} · {} actions",
-                        humansize::format_size(stats.file_count as u64, humansize::DECIMAL)
-                            .trim_end_matches(" B").to_string()
-                            .parse::<f64>()
-                            .map(|_| stats.file_count.to_string())
-                            .unwrap_or_else(|_| stats.file_count.to_string()),
+                        stats.file_count,
                         humansize::format_size(stats.bytes_managed, humansize::DECIMAL),
                         stats.actions_run,
                     )).color(PALETTE.text_dim).size(12.0));

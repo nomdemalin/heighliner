@@ -2,15 +2,31 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use same_file::is_same_file;
 
 use super::index::{ActionLog, Index};
 
 /// Move a file, preferring an atomic rename on the same volume; falling back
 /// to copy + fsync + unlink. If `dest` already exists, pick a unique sibling
-/// (`foo.pdf` → `foo (1).pdf`) rather than clobbering.
+/// (`foo.pdf` → `foo (1).pdf`) rather than clobbering. If `src` already lives
+/// at `dest` (identity move), skip without renaming.
 pub fn safe_move(src: &Path, dest: &Path, dry_run: bool, index: &Index, rule_name: Option<&str>) -> Result<PathBuf> {
-    let final_dest = unique_sibling(dest);
+    // F19: identity move. If src is already at (or inode-identical to) dest,
+    // don't let unique_sibling turn it into a `foo (1)` cascade.
+    if is_identity_move(src, dest) {
+        index.log_action(&ActionLog {
+            kind: "skip_in_place".into(),
+            from_path: Some(src.to_path_buf()),
+            to_path: Some(dest.to_path_buf()),
+            rule_name: rule_name.map(str::to_string),
+            success: true,
+            error: None,
+        })?;
+        return Ok(src.to_path_buf());
+    }
+
+    let final_dest = unique_sibling(dest)?;
     if dry_run {
         index.log_action(&ActionLog {
             kind: "move_dry_run".into(),
@@ -80,9 +96,11 @@ fn copy_then_delete(src: &Path, dest: &Path) -> Result<PathBuf> {
 }
 
 /// Pick `path`, or `path (1)`, `path (2)`, …, whichever doesn't exist.
-pub fn unique_sibling(path: &Path) -> PathBuf {
+/// Returns an error if 10,000 siblings are all taken (rather than silently
+/// returning the original path and letting the caller clobber it).
+pub fn unique_sibling(path: &Path) -> Result<PathBuf> {
     if !path.exists() {
-        return path.to_path_buf();
+        return Ok(path.to_path_buf());
     }
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
@@ -93,8 +111,20 @@ pub fn unique_sibling(path: &Path) -> PathBuf {
             None => parent.join(format!("{stem} ({i})")),
         };
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    path.to_path_buf()
+    Err(anyhow!(
+        "could not find a unique sibling for {} after 10000 attempts",
+        path.display()
+    ))
+}
+
+fn is_identity_move(src: &Path, dest: &Path) -> bool {
+    if src == dest {
+        return true;
+    }
+    // Resolve both ends if they exist; same-inode counts even when the path
+    // strings differ (e.g. symlink, trailing slash).
+    is_same_file(src, dest).unwrap_or(false)
 }

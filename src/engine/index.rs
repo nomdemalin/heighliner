@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::config::Tier;
 
@@ -257,13 +257,79 @@ impl Index {
 
     pub fn set_tier(&self, path: &Path, tier: Tier) -> Result<()> {
         let conn = self.conn.lock();
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT tier FROM files WHERE path = ?1",
+                params![path.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .optional()?;
         conn.execute(
             "UPDATE files SET tier = ?1 WHERE path = ?2",
             params![tier.dir_name(), path.to_string_lossy()],
         )?;
         conn.execute(
-            "INSERT INTO tier_moves (path, from_tier, to_tier, ts) VALUES (?1, NULL, ?2, strftime('%s','now'))",
-            params![path.to_string_lossy(), tier.dir_name()],
+            "INSERT INTO tier_moves (path, from_tier, to_tier, ts) VALUES (?1, ?2, ?3, strftime('%s','now'))",
+            params![path.to_string_lossy(), current, tier.dir_name()],
+        )?;
+        Ok(())
+    }
+
+    /// F20: atomic commit of a managed move. Updates files.path+tier+rule and
+    /// writes tier_moves in a single transaction so UI readers never see
+    /// torn state.
+    pub fn commit_managed_move(
+        &self,
+        from: &Path,
+        to: &Path,
+        tier: Tier,
+        rule_name: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let txn = conn.transaction()?;
+        let current: Option<String> = txn
+            .query_row(
+                "SELECT tier FROM files WHERE path = ?1",
+                params![from.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        txn.execute(
+            "UPDATE files SET path = ?1, tier = ?2, managed_by_rule = ?3 WHERE path = ?4",
+            params![
+                to.to_string_lossy(),
+                tier.dir_name(),
+                rule_name,
+                from.to_string_lossy()
+            ],
+        )?;
+        txn.execute(
+            "INSERT INTO tier_moves (path, from_tier, to_tier, ts) VALUES (?1, ?2, ?3, strftime('%s','now'))",
+            params![to.to_string_lossy(), current, tier.dir_name()],
+        )?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// F10: unix-ts of the last successful run of a named sweep, or None.
+    pub fn last_sweep_at(&self, kind: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock();
+        let ts: Option<i64> = conn
+            .query_row(
+                "SELECT last_run_at FROM sweep_runs WHERE kind = ?1",
+                params![kind],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(ts)
+    }
+
+    pub fn record_sweep(&self, kind: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO sweep_runs (kind, last_run_at) VALUES (?1, strftime('%s','now'))
+             ON CONFLICT(kind) DO UPDATE SET last_run_at = strftime('%s','now')",
+            params![kind],
         )?;
         Ok(())
     }

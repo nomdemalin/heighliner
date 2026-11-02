@@ -1,12 +1,17 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 
 mod app;
 mod engine;
 mod osx;
 mod ui;
+
+/// 512×512 PNG rendered from assets/icon.svg by `make icon`. Shipped as a
+/// tracked artifact so a fresh clone can `cargo build` without rsvg-convert
+/// installed.
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -34,9 +39,16 @@ fn main() -> Result<()> {
         index: Arc::new(index),
     });
 
+    // F12/F13: eframe decodes the PNG via its `image` feature; on macOS this
+    // becomes the application icon (visible in the Dock while running) which
+    // otherwise defaults to the eframe "E" and clobbers the bundle's icns.
+    let icon = eframe::icon_data::from_png_bytes(ICON_PNG)
+        .context("decode embedded icon.png")?;
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Heighliner")
+            .with_icon(Arc::new(icon))
             .with_inner_size([1200.0, 780.0])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
