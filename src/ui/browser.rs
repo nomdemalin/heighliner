@@ -13,6 +13,12 @@ use crate::ui::theme::{self, PALETTE};
 const BROWSER_ROW_CAP: u32 = 10_000;
 const ROW_HEIGHT: f32 = 30.0;
 
+/// Hard character budget for the Path column. Longer paths get a trailing
+/// `…` and the full value appears on hover. Column width is pinned so the
+/// Size / Modified / Last-used columns line up across rows.
+const PATH_MAX_CHARS: usize = 55;
+const PATH_COL_WIDTH: f32 = 440.0;
+
 pub struct BrowserState {
     pub sort: FileSort,
     pub descending: bool,
@@ -343,14 +349,23 @@ fn row_view(
 
         let rel = row.path.strip_prefix(root).unwrap_or(&row.path);
         let rel_s = rel.display().to_string();
+        let full_s = row.path.display().to_string();
+        let display_s = truncate_mid(&rel_s, PATH_MAX_CHARS);
         let name_label = egui::Label::new(
-            egui::RichText::new(rel_s)
+            egui::RichText::new(&display_s)
                 .color(PALETTE.text)
                 .monospace()
                 .size(12.5),
         )
-        .truncate();
-        ui.add(name_label);
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .selectable(false);
+        let resp = ui.add_sized([PATH_COL_WIDTH, 18.0], name_label);
+        if display_s != rel_s {
+            resp.on_hover_text(full_s);
+        } else {
+            // Still useful: hovering a short name shows the absolute path.
+            resp.on_hover_text(full_s);
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Actions.
@@ -407,6 +422,23 @@ fn row_view(
             );
         });
     });
+}
+
+/// Truncate `s` to at most `max_chars` characters, inserting `…` in the
+/// middle. Keeps the end visible so file extensions and leaf names survive.
+/// Operates on Unicode scalar values (chars), not bytes.
+fn truncate_mid(s: &str, max_chars: usize) -> String {
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s.to_string();
+    }
+    // Leave at least 1 char on each side; the ellipsis takes 1 char.
+    let keep = max_chars.saturating_sub(1);
+    let head_len = keep / 2;
+    let tail_len = keep - head_len;
+    let head: String = s.chars().take(head_len).collect();
+    let tail: String = s.chars().skip(total - tail_len).collect();
+    format!("{head}…{tail}")
 }
 
 fn relative_time(ts: Option<i64>) -> String {
