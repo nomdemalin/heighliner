@@ -28,13 +28,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut LogState, engine: &EngineHandle) {
     });
     ui.add_space(8.0);
 
-    let rows = match engine.index.recent_actions(1000) {
-        Ok(r) => r,
-        Err(e) => {
-            ui.colored_label(PALETTE.danger, format!("query failed: {e}"));
-            return;
-        }
-    };
+    // P3: cached_recent_actions is served from the engine's TTL cache; the
+    // panel can render twice a second without re-running the SQL each time.
+    let rows = engine.cached_recent_actions(1000);
 
     let f_lower = state.filter.to_lowercase();
     let rows: Vec<_> = rows
@@ -65,13 +61,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut LogState, engine: &EngineHandle) {
         return;
     }
 
+    // P16: virtualize. row_card height varies with number of lines (from/to/err),
+    // so use a conservative fixed estimate — ScrollArea::show_rows requires one.
+    const ROW_H: f32 = 86.0;
     card(ui, |ui| {
-        egui::ScrollArea::vertical().max_height(540.0).show(ui, |ui| {
-            for row in rows {
-                row_card(ui, &row);
-                ui.add_space(4.0);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .max_height(540.0)
+            .show_rows(ui, ROW_H, rows.len(), |ui, visible| {
+                for i in visible {
+                    row_card(ui, &rows[i]);
+                    ui.add_space(4.0);
+                }
+            });
     });
 }
 

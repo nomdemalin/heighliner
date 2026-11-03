@@ -18,9 +18,24 @@ impl Index {
             std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+
+        // P6: tune for the browser / drill / scan workload.
+        //   - WAL + sync=NORMAL keeps writes fast with crash safety.
+        //   - 64MB page cache turns full-table scans into memory walks on an
+        //     index of our size.
+        //   - 256MB mmap lets SQLite skip pread() syscalls on hot pages.
+        //   - case_sensitive_like is required for `path LIKE 'prefix/%'` to
+        //     use the files.path PRIMARY KEY index. Without this, LIKE scans
+        //     the whole table even when the PK could nail the prefix.
+        //     (All our queries will still migrate to range form in P7.)
+        //   - temp_store MEMORY avoids spilling GROUP BY / ORDER BY sorts.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "cache_size", -65_536i64)?; // 64 MiB
+        conn.pragma_update(None, "mmap_size", 268_435_456i64)?; // 256 MiB
+        conn.pragma_update(None, "case_sensitive_like", true)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
 
         let idx = Self { conn: Mutex::new(conn) };
         idx.migrate()?;
@@ -34,26 +49,21 @@ impl Index {
             conn.execute_batch(include_str!("../../sql/0001_init.sql"))?;
             conn.pragma_update(None, "user_version", 1)?;
         }
+        if version < 2 {
+            conn.execute_batch(include_str!("../../sql/0002_perf.sql"))?;
+            conn.pragma_update(None, "user_version", 2)?;
+        }
         Ok(())
     }
 
-    pub fn file_count(&self) -> Result<u64> {
+    /// P4: O(1) stats reads via the counters table (maintained by triggers).
+    pub fn quick_stats(&self) -> Result<(u64, u64, u64)> {
         let conn = self.conn.lock();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
-        Ok(n as u64)
-    }
-
-    pub fn action_count(&self) -> Result<u64> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM actions_log WHERE success = 1", [], |r| r.get(0))?;
-        Ok(n as u64)
-    }
-
-    pub fn total_bytes(&self) -> Result<u64> {
-        let conn = self.conn.lock();
-        let n: i64 = conn
-            .query_row("SELECT COALESCE(SUM(size), 0) FROM files", [], |r| r.get(0))?;
-        Ok(n as u64)
+        let mut stmt = conn.prepare_cached("SELECT value FROM stats_counters WHERE key = ?1")?;
+        let file_count: i64 = stmt.query_row(params!["file_count"], |r| r.get(0))?;
+        let bytes: i64 = stmt.query_row(params!["bytes_managed"], |r| r.get(0))?;
+        let actions: i64 = stmt.query_row(params!["actions_run"], |r| r.get(0))?;
+        Ok((file_count.max(0) as u64, bytes.max(0) as u64, actions.max(0) as u64))
     }
 
     /// Insert or update a file row from a freshly observed metadata snapshot.
@@ -80,6 +90,45 @@ impl Index {
                 row.managed_by_rule,
             ],
         )?;
+        Ok(())
+    }
+
+    /// P2: batch upsert for the scanner. One transaction, one prepared
+    /// statement, all rows inserted at once. 10–50× faster on an initial
+    /// scan than looping through `upsert_file` because every autocommit
+    /// otherwise fsyncs the WAL.
+    pub fn upsert_batch(&self, rows: &[FileRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock();
+        let txn = conn.transaction()?;
+        {
+            let mut stmt = txn.prepare_cached(
+                "INSERT INTO files (path, size, created, modified, atime, last_user_access, tier, managed_by_rule)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(path) DO UPDATE SET
+                    size = excluded.size,
+                    modified = excluded.modified,
+                    atime = excluded.atime,
+                    last_user_access = COALESCE(excluded.last_user_access, files.last_user_access),
+                    tier = excluded.tier,
+                    managed_by_rule = COALESCE(excluded.managed_by_rule, files.managed_by_rule)",
+            )?;
+            for row in rows {
+                stmt.execute(params![
+                    row.path.to_string_lossy(),
+                    row.size as i64,
+                    row.created,
+                    row.modified,
+                    row.atime,
+                    row.last_user_access,
+                    row.tier.map(|t| t.dir_name()),
+                    row.managed_by_rule,
+                ])?;
+            }
+        }
+        txn.commit()?;
         Ok(())
     }
 
@@ -120,46 +169,52 @@ impl Index {
     }
 
     /// Breakdown by the top-level directory immediately under the given root.
-    /// If `root = /Users/alice/Downloads`, returns rows for each entry under
-    /// that path with the sum of sizes and the "dominant" tier (max bytes).
+    ///
+    /// P7+P9: uses a range query on the `files.path` PK index (not LIKE) and
+    /// pushes the child-name extraction + aggregation into SQLite. The query
+    /// returns one row per (child, tier) — at most O(num_children × 4) rows
+    /// — instead of one row per file. On a 100k-file subtree this collapses
+    /// the FFI boundary crossing from 100k rows to a few dozen.
     pub fn bytes_per_child(&self, root: &Path) -> Result<Vec<ChildBreakdown>> {
+        let (lo, hi) = prefix_range(root);
+        let prefix_chars = lo.chars().count() as i64;
         let conn = self.conn.lock();
-        let root_s = {
-            let mut s = root.to_string_lossy().into_owned();
-            if !s.ends_with('/') {
-                s.push('/');
-            }
-            s
-        };
-        let like = format!("{}%", root_s);
-        let mut stmt = conn.prepare(
-            "SELECT path, size, COALESCE(tier, 'frozen') FROM files WHERE path LIKE ?1",
+        let mut stmt = conn.prepare_cached(
+            "WITH per_tier AS (
+                SELECT
+                    CASE
+                        WHEN instr(substr(path, ?1 + 1), '/') > 0
+                        THEN substr(path, ?1 + 1, instr(substr(path, ?1 + 1), '/') - 1)
+                        ELSE substr(path, ?1 + 1)
+                    END AS child_name,
+                    COALESCE(tier, 'frozen') AS tier_str,
+                    size
+                FROM files
+                WHERE path >= ?2 AND path < ?3
+             )
+             SELECT child_name, tier_str, COALESCE(SUM(size), 0), COUNT(*)
+             FROM per_tier
+             WHERE child_name != ''
+             GROUP BY child_name, tier_str",
         )?;
-        let rows = stmt.query_map([like], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
 
         use std::collections::HashMap;
         let mut agg: HashMap<String, ChildAggregate> = HashMap::new();
+        let rows = stmt.query_map(params![prefix_chars, lo, hi], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
         for row in rows {
-            let (path, size, tier_str) = row?;
-            let rest = &path[root_s.len()..];
-            let child = match rest.split_once('/') {
-                Some((head, _)) => head.to_string(),
-                None => rest.to_string(),
-            };
-            if child.is_empty() {
-                continue;
-            }
+            let (child, tier_str, size_sum, file_cnt) = row?;
             let tier = parse_tier(&tier_str).unwrap_or(Tier::Frozen);
             let entry = agg.entry(child).or_default();
-            entry.total_bytes += size as u64;
-            entry.file_count += 1;
-            *entry.by_tier.entry(tier).or_default() += size as u64;
+            entry.total_bytes += size_sum as u64;
+            entry.file_count += file_cnt as u64;
+            *entry.by_tier.entry(tier).or_default() += size_sum as u64;
         }
 
         let mut out: Vec<ChildBreakdown> = agg
@@ -183,22 +238,31 @@ impl Index {
         Ok(out)
     }
 
-    /// Files under a given path prefix, sorted by size descending.
-    /// Used by the treemap's drill-in view so the user can see which
-    /// individual files are eating a given subfolder's bytes.
-    pub fn files_under(&self, prefix: &Path, limit: u32) -> Result<Vec<FileRow>> {
+    /// Files under a prefix, with explicit sort. P7: uses a range form on
+    /// the files.path PK index instead of LIKE.
+    pub fn files_under_sorted(
+        &self,
+        prefix: &Path,
+        sort: FileSort,
+        descending: bool,
+        limit: u32,
+    ) -> Result<Vec<FileRow>> {
+        let (lo, hi) = prefix_range(prefix);
         let conn = self.conn.lock();
-        let mut p = prefix.to_string_lossy().into_owned();
-        if !p.ends_with('/') {
-            p.push('/');
-        }
-        let like = format!("{}%", p);
-        let mut stmt = conn.prepare(
+        let order_col = match sort {
+            FileSort::Size => "size",
+            FileSort::Modified => "COALESCE(modified, 0)",
+            FileSort::LastAccess => "COALESCE(last_user_access, 0)",
+            FileSort::Path => "path",
+        };
+        let dir = if descending { "DESC" } else { "ASC" };
+        let sql = format!(
             "SELECT path, size, created, modified, atime, last_user_access, tier, managed_by_rule
-             FROM files WHERE path LIKE ?1 ORDER BY size DESC LIMIT ?2",
-        )?;
+             FROM files WHERE path >= ?1 AND path < ?2 ORDER BY {order_col} {dir} LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
-            .query_map(rusqlite::params![like, limit], |r| {
+            .query_map(rusqlite::params![lo, hi, limit], |r| {
                 Ok(FileRow {
                     path: PathBuf::from(r.get::<_, String>(0)?),
                     size: r.get::<_, i64>(1)? as u64,
@@ -212,6 +276,18 @@ impl Index {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Total bytes + file count under a prefix. P7: range form on the PK.
+    pub fn totals_under(&self, prefix: &Path) -> Result<(u64, u64)> {
+        let (lo, hi) = prefix_range(prefix);
+        let conn = self.conn.lock();
+        let row: (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files WHERE path >= ?1 AND path < ?2",
+            rusqlite::params![lo, hi],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok((row.0 as u64, row.1 as u64))
     }
 
     pub fn files_in_tier(&self, tier: Tier, limit: u32) -> Result<Vec<FileRow>> {
@@ -387,6 +463,28 @@ impl Index {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+}
+
+/// Bounds for a prefix range query: `path >= lo AND path < hi`. The upper
+/// bound is `lo` with the final `/` (0x2F) swapped for `0` (0x30, the next
+/// ASCII codepoint), so the whole subtree sits between the two strings.
+fn prefix_range(prefix: &Path) -> (String, String) {
+    let mut lo = prefix.to_string_lossy().into_owned();
+    if !lo.ends_with('/') {
+        lo.push('/');
+    }
+    let mut hi = lo.clone();
+    hi.pop();
+    hi.push('0');
+    (lo, hi)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSort {
+    Size,
+    Modified,
+    LastAccess,
+    Path,
 }
 
 #[derive(Debug, Clone)]

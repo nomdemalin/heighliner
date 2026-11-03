@@ -53,17 +53,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TreemapState, engine: &EngineHandle) 
     else {
         return;
     };
-    let items = match engine.index.bytes_per_child(root) {
-        Ok(v) if !v.is_empty() => v,
-        Ok(_) => {
-            empty_state(ui, "No files indexed yet. The scanner runs at startup and on 'Scan now'.");
-            return;
-        }
-        Err(e) => {
-            ui.colored_label(PALETTE.danger, format!("treemap query failed: {e}"));
-            return;
-        }
-    };
+    // P3: cached. Previously ran the LIKE scan twice a second on the whole
+    // selected root.
+    let items = engine.cached_bytes_per_child(root);
+    if items.is_empty() {
+        empty_state(ui, "No files indexed yet. The scanner runs at startup and on 'Scan now'.");
+        return;
+    }
 
     let total: u64 = items.iter().map(|i| i.bytes).sum();
     if total == 0 {
@@ -134,112 +130,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TreemapState, engine: &EngineHandle) 
             state.drill_path = Some(root.join(&c.name));
         }
     }
-
-    // Drill-in listing below the treemap.
-    if let Some(drill) = state.drill_path.clone() {
-        ui.add_space(10.0);
-        draw_drill_in(ui, state, engine, &drill);
-    }
-}
-
-fn draw_drill_in(
-    ui: &mut egui::Ui,
-    state: &mut TreemapState,
-    engine: &EngineHandle,
-    drill: &std::path::Path,
-) {
-    egui::Frame::none()
-        .fill(PALETTE.bg_card)
-        .stroke(Stroke::new(1.0_f32, PALETTE.border))
-        .rounding(Rounding::same(8.0))
-        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let back = egui::Button::new(
-                    egui::RichText::new("←  back to treemap").color(PALETTE.text),
-                )
-                .fill(PALETTE.bg_elevated)
-                .rounding(Rounding::same(6.0));
-                if ui.add(back).clicked() {
-                    state.drill_path = None;
-                }
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(
-                    egui::RichText::new(drill.display().to_string())
-                        .color(PALETTE.text)
-                        .monospace()
-                        .size(12.5),
-                ));
-            });
-            ui.add_space(8.0);
-
-            let files = match engine.index.files_under(drill, 500) {
-                Ok(v) => v,
-                Err(e) => {
-                    ui.colored_label(PALETTE.danger, format!("query failed: {e}"));
-                    return;
-                }
-            };
-            if files.is_empty() {
-                ui.colored_label(
-                    PALETTE.text_dim,
-                    "No files indexed under this subfolder yet (scan may still be in progress).",
-                );
-                return;
-            }
-
-            let total: u64 = files.iter().map(|f| f.size).sum();
-            ui.add(egui::Label::new(
-                egui::RichText::new(format!(
-                    "{} files · {} · largest first",
-                    files.len(),
-                    humansize::format_size(total, humansize::DECIMAL),
-                ))
-                .color(PALETTE.text_dim)
-                .size(11.5),
-            ));
-            ui.add_space(4.0);
-
-            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                for f in files {
-                    file_row(ui, drill, &f);
-                }
-            });
-        });
-}
-
-fn file_row(ui: &mut egui::Ui, root: &std::path::Path, f: &crate::engine::index::FileRow) {
-    egui::Frame::none()
-        .fill(PALETTE.bg_elevated)
-        .rounding(Rounding::same(5.0))
-        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let tier_c = f.tier.map(theme::tier_color).unwrap_or(PALETTE.text_faint);
-                let tier_g = f.tier.map(theme::tier_glyph).unwrap_or("·");
-                ui.colored_label(tier_c, tier_g);
-                let rel = f.path.strip_prefix(root).unwrap_or(&f.path);
-                ui.add(egui::Label::new(
-                    egui::RichText::new(rel.display().to_string())
-                        .color(PALETTE.text)
-                        .monospace()
-                        .size(12.0),
-                ));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Reveal").clicked() {
-                        crate::osx::reveal_in_finder(&f.path);
-                    }
-                    ui.add_space(6.0);
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(humansize::format_size(f.size, humansize::DECIMAL))
-                            .color(PALETTE.text_dim)
-                            .monospace()
-                            .size(12.0),
-                    ));
-                });
-            });
-        });
-    ui.add_space(2.0);
+    // The dedicated file browser is rendered by `ui::dashboard` when
+    // `state.drill_path` is Some — treemap no longer inlines the list.
 }
 
 fn empty_state(ui: &mut egui::Ui, msg: &str) {

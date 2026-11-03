@@ -3,15 +3,30 @@ use humansize::{format_size, DECIMAL};
 
 use crate::engine::config::Tier;
 use crate::engine::EngineHandle;
+use crate::ui::browser;
 use crate::ui::theme::{self, card, section_header, PALETTE};
 use crate::ui::treemap;
 
 #[derive(Default)]
 pub struct DashboardState {
     pub treemap: treemap::TreemapState,
+    pub browser: browser::BrowserState,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut DashboardState, engine: &EngineHandle) {
+    // Drill mode: dedicated browser takes over the Dashboard area so a 10k-
+    // file subfolder doesn't live inside the overview page.
+    if let Some(root) = state.treemap.drill_path.clone() {
+        let mut clear = false;
+        browser::show(ui, &mut state.browser, engine, &root, &mut || {
+            clear = true;
+        });
+        if clear {
+            state.treemap.drill_path = None;
+        }
+        return;
+    }
+
     section_header(ui, "Dashboard", "What's happening in your watched directories");
     let stats = engine.stats_snapshot();
 
@@ -43,7 +58,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut DashboardState, engine: &EngineHandle
                 .color(PALETTE.text_dim),
         ));
         ui.add_space(8.0);
-        let per_tier = engine.index.bytes_per_tier().unwrap_or_default();
+        // P3: cached, 800ms TTL.
+        let per_tier = engine.cached_bytes_per_tier();
         draw_tier_bar(ui, &per_tier);
     });
 

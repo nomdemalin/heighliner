@@ -1,47 +1,18 @@
-use std::os::unix::fs::MetadataExt;
+// macOS-specific last-access signals.
+//
+// P1/P17: the scanner's hot path reads st_atime from a single `fs::metadata`
+// call now; the atime/mtime/btime helpers that used to live here were just
+// extra `fs::metadata()` syscalls. They're gone. What stays is the Spotlight
+// `kMDItemLastUsedDate` reader (F6), reserved for a future targeted call site
+// — e.g. right before promoting a file to the frozen tier — where paying one
+// fork+exec per candidate is acceptable.
+
 use std::path::Path;
 use std::process::Command;
-
-/// Best-effort last-access timestamp. Uses `st_atime` only — we deliberately
-/// do NOT fork `mdls` per file here (F6): that was a fork+exec per ingested
-/// file from the engine thread with no timeout, and a single hung mdls child
-/// would wedge the engine. `spotlight_last_used` stays available for
-/// targeted lookups (e.g. before promoting a file to the frozen tier).
-pub fn best_last_access(path: &Path) -> Option<i64> {
-    atime_unix(path)
-}
-
-/// Best-effort read of the file's last-access unix timestamp. On macOS this is
-/// `st_atime`; we treat the result as advisory because:
-///   - noatime mounts return the mount-time atime forever
-///   - Spotlight / Time Machine / anti-virus scans bump atime
-///   - APFS has quirks around when atime is persisted
-pub fn atime_unix(path: &Path) -> Option<i64> {
-    let md = std::fs::metadata(path).ok()?;
-    Some(md.atime())
-}
-
-pub fn mtime_unix(path: &Path) -> Option<i64> {
-    let md = std::fs::metadata(path).ok()?;
-    Some(md.mtime())
-}
-
-pub fn btime_unix(path: &Path) -> Option<i64> {
-    let md = std::fs::metadata(path).ok()?;
-    md.created()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs() as i64)
-}
 
 /// Shell out to `mdls -raw -name kMDItemLastUsedDate <path>`. Returns the
 /// parsed unix timestamp when LaunchServices has seen the file opened, else
 /// `None` (which is common for files only touched by scripts/CLIs).
-///
-/// Intentionally NOT called from the ingest hot path (F6). Reserved for the
-/// future "about to promote to frozen" check where paying one fork+exec per
-/// candidate file is acceptable.
 #[allow(dead_code)]
 #[cfg(target_os = "macos")]
 pub fn spotlight_last_used(path: &Path) -> Option<i64> {
@@ -60,9 +31,6 @@ pub fn spotlight_last_used(path: &Path) -> Option<i64> {
     if trimmed == "(null)" || trimmed.is_empty() {
         return None;
     }
-    // Format examples:
-    //   "2024-01-15 09:12:08 +0000"
-    //   "2026-10-30 18:04:11 -0700"
     let dt = chrono::DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S %z").ok()?;
     Some(dt.timestamp())
 }

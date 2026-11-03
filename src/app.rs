@@ -56,6 +56,9 @@ pub struct HeighlinerApp {
     pub tiers: ui::tiers::TiersState,
     pub log: ui::log::LogState,
     theme_applied: bool,
+    /// P18: last `engine.activity_version()` we rendered. Lets us keep the
+    /// app at ~0fps when nothing has changed.
+    last_activity_version: u64,
 }
 
 impl HeighlinerApp {
@@ -70,6 +73,7 @@ impl HeighlinerApp {
             tiers: ui::tiers::TiersState::default(),
             log: ui::log::LogState::default(),
             theme_applied: true,
+            last_activity_version: 0,
         }
     }
 }
@@ -91,7 +95,24 @@ impl eframe::App for HeighlinerApp {
         self.status_bar(ctx);
         self.body(ctx);
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        // P15+P18: idle app → ~0fps. We only ask for a repaint when:
+        //   - the engine is actively scanning (status dot should tick), or
+        //   - a new activity_version has arrived since the last frame.
+        // Both input events and `ctx.request_repaint()` elsewhere still
+        // trigger paints — this just stops the previous unconditional 500ms
+        // heartbeat from re-running every panel's SQL twice a second.
+        let v = self.engine.activity_version();
+        if v != self.last_activity_version {
+            self.last_activity_version = v;
+            ctx.request_repaint();
+        }
+        if self.engine.scanning() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        } else {
+            // Low-rate heartbeat so time-sensitive labels ("3 min ago") don't
+            // fossilize completely between activity bumps.
+            ctx.request_repaint_after(std::time::Duration::from_secs(5));
+        }
     }
 }
 

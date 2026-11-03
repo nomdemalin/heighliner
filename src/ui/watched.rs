@@ -112,7 +112,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut WatchedState, engine: &EngineHandle) 
                 });
             });
             // SQL outside the config lock.
-            if let Ok(breakdown) = engine.index.bytes_per_child(&row.path) {
+            {
+                // P3: cached per-root breakdown. Even with 3 watched roots
+                // this panel used to run three LIKE scans twice a second.
+                let breakdown = engine.cached_bytes_per_child(&row.path);
                 let total: u64 = breakdown.iter().map(|c| c.bytes).sum();
                 let count: u64 = breakdown.iter().map(|c| c.files).sum();
                 ui.add_space(6.0);

@@ -1,7 +1,6 @@
 // Periodic sweeps run from the engine thread on a cadence.
 
 use std::fs;
-use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -304,9 +303,11 @@ fn write_single_file_zip(src: &Path, zip_path: &Path) -> Result<u64> {
         .and_then(|n| n.to_str())
         .context("non-utf8 filename")?;
     zip.start_file(name.to_string(), options)?;
-    let mut buf = Vec::with_capacity(64 * 1024);
-    fs::File::open(src)?.read_to_end(&mut buf)?;
-    zip.write_all(&buf)?;
+    // P14: stream the source into the zip in small chunks via std::io::copy.
+    // Previously we `read_to_end` into a Vec, which blew up memory on a 2GB
+    // video → 2GB Rust buffer plus deflate working memory.
+    let mut src_file = fs::File::open(src)?;
+    std::io::copy(&mut src_file, &mut zip)?;
     let w = zip.finish()?;
     Ok(w.metadata()?.len())
 }
@@ -338,11 +339,11 @@ fn write_tree_zip(src: &Path, zip_path: &Path) -> Result<ZipTreeReport> {
         let name = rel.to_string_lossy().into_owned();
         let options = file_options_from(entry.path())?;
         zip.start_file(name, options)?;
+        // P14: stream the entry through io::copy so a 2GB video doesn't
+        // mean a 2GB Rust buffer.
         let mut f = fs::File::open(entry.path())?;
-        let mut buf = Vec::with_capacity(64 * 1024);
-        f.read_to_end(&mut buf)?;
-        zip.write_all(&buf)?;
-        uncompressed += buf.len() as u64;
+        let n = std::io::copy(&mut f, &mut zip)?;
+        uncompressed += n;
         file_count += 1;
     }
     let w = zip.finish()?;
