@@ -79,7 +79,7 @@ $(ICNS): $(ICON_SVG)
 	rm -rf $(ICONSET_DIR)
 	@echo "Built $(ICNS)"
 
-BUNDLE_ID      := io.github.nomdemalin.heighliner
+BUNDLE_ID      := com.remydelorme.heighliner
 APP_VERSION    := $(shell awk -F'"' '/^version/ {print $$2; exit}' Cargo.toml)
 APP_DIR        := $(DIST_DIR)/$(APP_NAME).app
 

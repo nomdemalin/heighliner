@@ -68,7 +68,7 @@ opt-level = 1  # otherwise egui/skia-ish rendering crawls
 
 [package.metadata.bundle]
 name = "Heighliner"
-identifier = "io.github.nomdemalin.heighliner"
+identifier = "com.remydelorme.heighliner"
 category = "public.app-category.utilities"
 short_description = "Keep your home directory in order."
 long_description = """

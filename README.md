@@ -1,16 +1,16 @@
 # Heighliner
 
-Your files have tiers now. Hot, warm, cold, frozen. Like wine, except nobody drinks the frozen ones.
+Your files have tiers now. Hot, warm, cold, frozen. Like wine. The frozen ones get forgotten, then thrown away. Eventually.
 
 Heighliner is a native macOS app that watches the directories you choose, moves files according to rules you write, and sorts them by how recently you touched them. It also shows you, in a treemap, exactly where your disk went. You will not like the answer.
 
-Version 0.1.0. It works. It does not apologise.
+Version 0.1.0. It works.
 
 ## What it does
 
-- **Watches directories.** FSEvents, debounced to one second, so an editor that saves on every keystroke does not get a vote.
+- **Watches directories.** FSEvents, debounced to one second, so an editor that saves on every keystroke does not get a voice.
 - **Indexes everything** into SQLite: size, created, modified, last access, tier, and which rule owns it.
-- **Applies rules.** You declare them in TOML or in the app. The first matching rule wins. Order matters. Choose wisely.
+- **Applies rules.** You declare them in TOML or in the app. Like a firewall, the first matching rule wins. Order matters. Choose wisely.
 - **Tiers by age.** Accessed within 7 days is hot. Within 30, warm. Within 90, cold. Beyond that, frozen. All four thresholds are yours to change.
 - **Sweeps on a schedule.** Rescan, retier, archive, purge, delete-after. Quietly, in the background, like a good concierge.
 - **Shows the damage.** Dashboard with stat tiles, a tier breakdown bar and a squarified treemap. Click a tile to drill in. Sort by size. Reveal in Finder. Send to the Trash, which Finder can undo, because accidents happen to other people.
@@ -177,9 +177,8 @@ Rust, egui 0.29, SQLite (bundled), `notify`. No Electron. Obviously.
 
 ## Status
 
-- macOS only. Linux compiles in theory. Theory is not support.
-- No tests yet. The adversarial review is the test suite for now. Not ideal. Noted.
-- No signed or notarised builds. Gatekeeper will have opinions.
+- macOS only. Linux compiles in theory. Theory is not support. A clean build is not support. Questions are not taken.
+- No signed or notarised builds. Gatekeeper will have opinions. So does the author, and he is French about it.
 
 ## Licence
 
