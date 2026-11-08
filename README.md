@@ -167,6 +167,8 @@ src/
     scheduler.rs   retier, archive, purge, delete-after sweeps
     index.rs       SQLite: files, actions, tier moves, counters
     config.rs      the TOML, typed
+    paths.rs       where config, index and logs live
+    access.rs      Spotlight last-used date, held in reserve
   ui/              egui panels: dashboard, treemap, browser,
                    watched, rules, tiers, log, theme
   osx/             Reveal in Finder, move to Trash
